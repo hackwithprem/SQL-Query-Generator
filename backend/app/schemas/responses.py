@@ -1,11 +1,22 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+
+class UserResponse(BaseModel):
+    id: Union[int, str]
+    full_name: str
+    email: str
+    created_at: Optional[str] = None
+
+class AuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
 
 class ColumnSchema(BaseModel):
     name: str
     type: str
-    primary_key: bool
-    nullable: bool
+    primary_key: bool = False
+    nullable: bool = True
     default: Optional[str] = None
 
 class ForeignKeySchema(BaseModel):
@@ -16,7 +27,7 @@ class ForeignKeySchema(BaseModel):
 class TableSchema(BaseModel):
     table_name: str
     columns: List[ColumnSchema]
-    foreign_keys: List[ForeignKeySchema]
+    foreign_keys: List[ForeignKeySchema] = []
     row_count: Optional[int] = None
 
 class DatabaseSchemaResponse(BaseModel):
@@ -30,6 +41,10 @@ class GenerateSQLResponse(BaseModel):
     clarification: Optional[str] = None
     is_safe: bool = True
     provider: str
+    target_database: Optional[str] = "SQLite Sample DB"
+    schema_assumed: bool = False  # True when no schema was available and table/column names were inferred
+    rag_applied: bool = False
+    retrieved_examples: Optional[List[Dict[str, Any]]] = None
 
 class ExecuteSQLResponse(BaseModel):
     columns: List[str]
@@ -38,6 +53,7 @@ class ExecuteSQLResponse(BaseModel):
     duration_ms: float
     sql: str
     truncated: bool = False
+    target_database: Optional[str] = "SQLite Sample DB"
 
 class ExplainSQLResponse(BaseModel):
     sql: str
@@ -51,7 +67,7 @@ class CorrectSQLResponse(BaseModel):
     is_safe: bool = True
 
 class HistoryItemResponse(BaseModel):
-    id: int
+    id: Union[int, str]
     natural_query: str
     generated_sql: str
     executed: bool
@@ -66,3 +82,39 @@ class HealthResponse(BaseModel):
     database: Dict[str, Any]
     ai_provider: Dict[str, Any]
     version: str = "1.0.0"
+
+class UploadedDatasetResponse(BaseModel):
+    id: str
+    original_filename: str
+    file_size_bytes: int
+    file_type: str
+    sheet_name: Optional[str] = None
+    table_name: str
+    row_count: int
+    column_count: int
+    columns: List[Dict[str, Any]]
+    status: str = "ready"
+    created_at: Optional[str] = None
+
+class DatasetPreviewResponse(BaseModel):
+    dataset: UploadedDatasetResponse
+    sample_rows: List[Dict[str, Any]]
+
+class CloudConnectionResponse(BaseModel):
+    id: str
+    name: str
+    provider: str
+    host: str
+    port: int
+    database_name: str
+    username: str
+    ssl_enabled: bool
+    extra_params: Optional[Dict[str, Any]] = None
+    status: str = "configured"
+    created_at: Optional[str] = None
+
+class CloudConnectionTestResponse(BaseModel):
+    success: bool
+    message: str
+    server_version: Optional[str] = None
+    duration_ms: Optional[float] = None

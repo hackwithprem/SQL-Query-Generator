@@ -1,7 +1,8 @@
 import datetime
 from sqlalchemy.orm import Session
 from app.database.connection import engine, Base, SessionLocal
-from app.database.models import Department, Student, Course, Enrollment, Mark, QueryHistory
+from app.database.models import User, Department, Student, Course, Enrollment, Mark, QueryHistory, UploadedDataset, DatabaseConnectionModel
+from app.core.security import hash_password
 
 def seed_database(db: Session = None):
     should_close = False
@@ -13,7 +14,43 @@ def seed_database(db: Session = None):
         # Create all tables if not exist
         Base.metadata.create_all(bind=engine)
 
-        # Check if already seeded
+        # Migration: Ensure user_id column exists on query_history for existing SQLite database
+        try:
+            from sqlalchemy import text
+            with engine.connect() as conn:
+                res = conn.execute(text("PRAGMA table_info(query_history)")).fetchall()
+                col_names = [r[1] for r in res]
+                if "user_id" not in col_names:
+                    conn.execute(text("ALTER TABLE query_history ADD COLUMN user_id INTEGER REFERENCES users(id)"))
+                    conn.commit()
+
+                # Migration for users.supabase_id
+                res_u = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+                u_cols = [r[1] for r in res_u]
+                if "supabase_id" not in u_cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN supabase_id VARCHAR(64)"))
+                    conn.commit()
+
+                # Migration for uploaded_datasets.storage_path
+                res_d = conn.execute(text("PRAGMA table_info(uploaded_datasets)")).fetchall()
+                d_cols = [r[1] for r in res_d]
+                if "storage_path" not in d_cols:
+                    conn.execute(text("ALTER TABLE uploaded_datasets ADD COLUMN storage_path VARCHAR(255)"))
+                    conn.commit()
+        except Exception as e:
+            print(f"Migration notice: {e}")
+
+        # Seed default demo user if not present
+        if db.query(User).filter(User.email == "demo@example.com").first() is None:
+            demo_user = User(
+                full_name="Alex Morgan",
+                email="demo@example.com",
+                hashed_password=hash_password("DemoUser123!"),
+            )
+            db.add(demo_user)
+            db.commit()
+
+        # Check if academic data is already seeded
         if db.query(Department).count() > 0:
             return
 

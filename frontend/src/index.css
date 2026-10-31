@@ -21,10 +21,10 @@
   }
 }
 
-.light body {
+html.light body {
   @apply bg-slate-50 text-slate-900;
 }
 
-.light ::-webkit-scrollbar-thumb {
+html.light ::-webkit-scrollbar-thumb {
   @apply bg-slate-300 rounded hover:bg-slate-400;
 }

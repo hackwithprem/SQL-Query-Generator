@@ -28,15 +28,57 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = Field(default="", validation_alias="GEMINI_API_KEY")
     GEMINI_MODEL: str = "gemini-1.5-flash"
     
+    # Supabase Settings
+    SUPABASE_URL: str = Field(default="", validation_alias="SUPABASE_URL")
+    SUPABASE_KEY: str = Field(default="", validation_alias="SUPABASE_KEY")
+    SUPABASE_SERVICE_ROLE_KEY: str = Field(default="", validation_alias="SUPABASE_SERVICE_ROLE_KEY")
+    SUPABASE_STORAGE_BUCKET: str = "private-datasets"
+
+    # RAG (Retrieval-Augmented Generation) Settings
+    RAG_ENABLED: bool = True
+    RAG_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    RAG_TOP_K: int = 3
+    RAG_SIMILARITY_THRESHOLD: float = 0.4
+
     # Database Settings
     DATABASE_URL: str = f"sqlite:///{DATA_DIR / 'sample.db'}"
     
+    # Authentication Settings
+    JWT_SECRET_KEY: str = "sql-query-generator-secret-key-change-in-prod-2026"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
+
+    # File Upload Settings
+    UPLOAD_DIR: str = str(DATA_DIR / "uploads")
+    MAX_UPLOAD_SIZE_MB: int = 15
+    MAX_UPLOAD_ROWS: int = 50000
+
     # Query Execution Guardrails
     MAX_RESULT_ROWS: int = 500
     QUERY_TIMEOUT_SECONDS: int = 10
     
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def resolve_database_url(cls, v: str) -> str:
+        if isinstance(v, str) and v.startswith("sqlite:///"):
+            path_part = v[len("sqlite:///"):]
+            p = Path(path_part)
+            if not p.is_absolute():
+                abs_path = (BASE_DIR / path_part).resolve()
+                return f"sqlite:///{abs_path}"
+        return v
+
+    @field_validator("UPLOAD_DIR", mode="before")
+    @classmethod
+    def resolve_upload_dir(cls, v: str) -> str:
+        if isinstance(v, str):
+            p = Path(v)
+            if not p.is_absolute():
+                return str((BASE_DIR / p).resolve())
+        return v
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

@@ -1,7 +1,7 @@
 import os
 import re
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from app.core.config import settings
 
 def strip_markdown_code_fences(text: str) -> str:
@@ -30,7 +30,13 @@ class BaseLLMProvider(ABC):
         pass
 
     @abstractmethod
-    def generate_sql(self, question: str, schema_context: str, dialect: str = "sqlite") -> str:
+    def generate_sql(
+        self, 
+        question: str, 
+        schema_context: str, 
+        dialect: str = "sqlite",
+        retrieved_examples: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
         """Translates a natural language question into a safe SQL query."""
         pass
 
@@ -64,9 +70,37 @@ class GroqProvider(BaseLLMProvider):
     def is_configured(self) -> bool:
         return self._client is not None
 
-    def generate_sql(self, question: str, schema_context: str, dialect: str = "sqlite") -> str:
+    def generate_sql(
+        self, 
+        question: str, 
+        schema_context: str, 
+        dialect: str = "sqlite",
+        retrieved_examples: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
         if not self.is_configured:
             raise RuntimeError("Groq API key is not configured.")
+
+        has_schema = schema_context.strip() and schema_context.strip() != "No schema available."
+
+        if has_schema:
+            schema_rules = f"""3. Use ONLY the tables, columns, and relationships defined in the database schema below. Do NOT invent columns or tables.
+4. If the question can be answered using the schema, return ONLY the raw SQL query. Do NOT include markdown code blocks, do not include explanations, and do not include extra commentary.
+
+DATABASE SCHEMA:
+{schema_context}"""
+        else:
+            schema_rules = f"""3. No database schema is available. Generate the most reasonable SQL query using conventional, widely-accepted table and column names that match the user's question. Use standard naming conventions (e.g., products, product_name, price, customers, orders).
+4. Return ONLY the raw SQL query. Do NOT include markdown code blocks, do not include explanations, and do not include extra commentary. Do NOT return SCHEMA_ERROR.
+
+DATABASE SCHEMA:
+(No schema provided — use best-practice naming assumptions)"""
+
+        examples_section = ""
+        if retrieved_examples:
+            from app.services.rag.rag_service import RAGService
+            formatted = RAGService.format_examples_for_prompt(retrieved_examples)
+            if formatted:
+                examples_section = f"\n\n{formatted}"
 
         system_prompt = f"""You are an expert SQL engineer.
 Your task is to translate natural language questions into accurate, high-performance, and safe SQL queries for {dialect.upper()}.
@@ -74,12 +108,7 @@ Your task is to translate natural language questions into accurate, high-perform
 CRITICAL SECURITY AND ACCURACY RULES:
 1. ONLY produce read-only SELECT queries.
 2. NEVER use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, REPLACE, or multiple statements.
-3. Use ONLY the tables, columns, and relationships defined in the database schema below. Do NOT invent columns or tables.
-4. If a question is ambiguous or references columns that don't exist, generate the best possible query using existing columns or add an SQL comment.
-5. Return ONLY the raw SQL query. Do NOT include markdown code blocks, do not include explanations, and do not include extra commentary.
-
-DATABASE SCHEMA:
-{schema_context}
+{schema_rules}{examples_section}
 """
 
         response = self._client.chat.completions.create(
@@ -194,9 +223,33 @@ class GeminiProvider(BaseLLMProvider):
     def is_configured(self) -> bool:
         return self._client is not None
 
-    def generate_sql(self, question: str, schema_context: str, dialect: str = "sqlite") -> str:
+    def generate_sql(
+        self, 
+        question: str, 
+        schema_context: str, 
+        dialect: str = "sqlite",
+        retrieved_examples: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
         if not self.is_configured:
             raise RuntimeError("Gemini API key is not configured.")
+
+        has_schema = schema_context.strip() and schema_context.strip() != "No schema available."
+
+        if has_schema:
+            schema_instruction = f"""Use ONLY the tables and columns defined in the schema below:
+{schema_context}
+
+If the question can be answered using the schema, return ONLY the raw SQL query with no extra text or markdown fences."""
+        else:
+            schema_instruction = f"""No database schema is provided. Generate the most reasonable SQL query using conventional, widely-accepted table and column names that match the user's question. Use standard naming conventions (e.g., products, product_name, price, customers, orders).
+Return ONLY the raw SQL query with no extra text or markdown fences. Do NOT return SCHEMA_ERROR."""
+
+        examples_instruction = ""
+        if retrieved_examples:
+            from app.services.rag.rag_service import RAGService
+            formatted = RAGService.format_examples_for_prompt(retrieved_examples)
+            if formatted:
+                examples_instruction = f"\n4. {formatted}\n"
 
         prompt = f"""You are an expert SQL engineer.
 Translate this natural language question into an accurate, safe SQL query for {dialect.upper()}.
@@ -204,12 +257,9 @@ Translate this natural language question into an accurate, safe SQL query for {d
 CRITICAL RULES:
 1. ONLY produce read-only SELECT queries.
 2. NEVER use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, or multiple statements.
-3. Use ONLY the tables and columns defined in the schema below:
-{schema_context}
-
+3. {schema_instruction}
+{examples_instruction}
 Question: {question}
-
-Return ONLY the raw SQL query with no extra text or markdown fences.
 """
         response = self._client.models.generate_content(
             model=self.model_name,
@@ -274,8 +324,39 @@ class MockOfflineProvider(BaseLLMProvider):
     def is_configured(self) -> bool:
         return True
 
-    def generate_sql(self, question: str, schema_context: str, dialect: str = "sqlite") -> str:
+    def generate_sql(
+        self, 
+        question: str, 
+        schema_context: str, 
+        dialect: str = "sqlite",
+        retrieved_examples: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
         q = question.lower().strip()
+
+        # Handle uploaded dataset or custom table schema dynamically
+        if "Available Table:" in schema_context:
+            match = re.search(r"Available Table:\s*([a-zA-Z0-9_]+)", schema_context)
+            if match:
+                table_name = match.group(1)
+                col_matches = re.findall(r"-\s*([a-zA-Z0-9_]+):", schema_context)
+                cols_str = ", ".join(col_matches) if col_matches else "*"
+
+                num_match = re.search(r"(?:more than|greater than|>|above|earning more than)\s*(\d+)", q)
+                val_col = next((c for c in col_matches if any(k in c.lower() for k in ["salary", "amount", "revenue", "price", "score", "marks"])), None)
+
+                if num_match and val_col:
+                    threshold = num_match.group(1)
+                    return f"SELECT {cols_str} FROM {table_name} WHERE {val_col} > {threshold} ORDER BY {val_col} DESC LIMIT 500;"
+                elif "count" in q:
+                    return f"SELECT COUNT(*) AS total_records FROM {table_name};"
+                elif "top" in q:
+                    order_col = val_col or (col_matches[0] if col_matches else "1")
+                    return f"SELECT {cols_str} FROM {table_name} ORDER BY {order_col} DESC LIMIT 5;"
+                elif "average" in q or "avg" in q:
+                    target_num_col = val_col or (col_matches[0] if col_matches else "*")
+                    return f"SELECT ROUND(AVG({target_num_col}), 2) AS average_value FROM {table_name};"
+                else:
+                    return f"SELECT {cols_str} FROM {table_name} LIMIT 500;"
 
         # Comprehensive rule-based and intent matching for academic sample dataset
         if "more than 80" in q or "> 80" in q or "over 80" in q or "scored more than 80" in q:
@@ -357,6 +438,60 @@ ORDER BY s.gpa DESC;"""
 
         if "gpa" in q and ("greater" in q or ">" in q or "above" in q or "higher" in q):
             return "SELECT id, first_name, last_name, email, gpa FROM students WHERE gpa >= 3.5 ORDER BY gpa DESC;"
+
+        # Check if the question asks for entities not present in the University Sample DB schema
+        sample_tables = ["student", "course", "department", "enrollment", "mark"]
+        if not any(t in q for t in sample_tables):
+            # No schema context — generate reasonable SQL using conventional naming conventions
+            # Detect the primary entity from common patterns
+            entity_map = {
+                "product": ("products", ["product_id", "product_name", "price", "category", "stock_quantity"]),
+                "item": ("items", ["item_id", "item_name", "price", "quantity"]),
+                "order": ("orders", ["order_id", "customer_id", "order_date", "total_amount", "status"]),
+                "customer": ("customers", ["customer_id", "first_name", "last_name", "email", "phone"]),
+                "employee": ("employees", ["employee_id", "first_name", "last_name", "department", "salary"]),
+                "sale": ("sales", ["sale_id", "product_id", "quantity", "sale_date", "revenue"]),
+                "inventory": ("inventory", ["item_id", "item_name", "quantity", "warehouse_location"]),
+                "book": ("books", ["book_id", "title", "author", "genre", "price"]),
+                "user": ("users", ["user_id", "username", "email", "created_at", "role"]),
+            }
+
+            matched_entity = None
+            for kw, (table, cols) in entity_map.items():
+                if kw in q:
+                    matched_entity = (table, cols)
+                    break
+
+            if matched_entity:
+                table, cols = matched_entity
+
+                # Detect query intent
+                num_match = re.search(r"(?:more than|greater than|>|above|over)\s*(\d+)", q)
+                val_col = next((c for c in cols if any(k in c.lower() for k in ["price", "salary", "amount", "revenue", "quantity"])), None)
+
+                col_select = ", ".join(cols)
+
+                if num_match and val_col:
+                    threshold = num_match.group(1)
+                    return f"SELECT {col_select} FROM {table} WHERE {val_col} > {threshold} ORDER BY {val_col} DESC;"
+                elif any(w in q for w in ["count", "how many", "total number"]):
+                    return f"SELECT COUNT(*) AS total_{table} FROM {table};"
+                elif any(w in q for w in ["average", "avg"]) and val_col:
+                    return f"SELECT ROUND(AVG({val_col}), 2) AS average_{val_col} FROM {table};"
+                elif any(w in q for w in ["top", "highest", "most expensive"]) and val_col:
+                    return f"SELECT {col_select} FROM {table} ORDER BY {val_col} DESC LIMIT 10;"
+                elif any(w in q for w in ["cheapest", "lowest", "minimum"]) and val_col:
+                    return f"SELECT {col_select} FROM {table} ORDER BY {val_col} ASC LIMIT 10;"
+                else:
+                    # Generic: list all with assumed relevant columns
+                    # Prefer name + price or relevant value columns for display
+                    display_cols = [c for c in cols if any(k in c.lower() for k in ["name", "title", "price", "salary", "date", "email", "status"])]
+                    primary_key = cols[0] if cols else f"{table}_id"
+                    select_cols = ", ".join([primary_key] + display_cols) if display_cols else col_select
+                    return f"SELECT {select_cols} FROM {table};"
+
+            # Generic free-form question with no recognized entity — generate a safe placeholder query
+            return "SELECT * FROM your_table_name LIMIT 50;"
 
         # Default intelligent fallback for any other general query
         return """SELECT s.id, s.first_name, s.last_name, s.email, s.gpa, d.name AS department

@@ -4,6 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.database.seed import seed_database
 from app.api.routes import (
+    auth,
+    data,
+    connections,
     generate,
     execute,
     explain,
@@ -15,7 +18,7 @@ from app.api.routes import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: ensure database exists and is seeded with sample data
+    # Startup: ensure database exists, tables created, and seeded
     try:
         seed_database()
     except Exception as e:
@@ -25,7 +28,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="Full-stack AI-powered SQL Query Generator from Plain English with safe query validation and execution.",
+    description="Full-stack AI-powered SQL Query Generator from Plain English with multi-database support, file uploads, safe query validation, and cloud connectivity.",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -41,6 +44,9 @@ app.add_middleware(
 
 # Register API Routers
 app.include_router(health.router)
+app.include_router(auth.router)
+app.include_router(data.router)
+app.include_router(connections.router)
 app.include_router(generate.router)
 app.include_router(execute.router)
 app.include_router(explain.router)

@@ -1,7 +1,21 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, Date, DateTime
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Date, DateTime, Boolean, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database.connection import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    supabase_id = Column(String(64), unique=True, nullable=True, index=True)
+    full_name = Column(String(100), nullable=False)
+    email = Column(String(150), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    history = relationship("QueryHistory", back_populates="user", cascade="all, delete-orphan")
+    datasets = relationship("UploadedDataset", back_populates="user", cascade="all, delete-orphan")
+    connections = relationship("DatabaseConnectionModel", back_populates="user", cascade="all, delete-orphan")
 
 class Department(Base):
     __tablename__ = "departments"
@@ -73,6 +87,7 @@ class QueryHistory(Base):
     __tablename__ = "query_history"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     natural_query = Column(String, nullable=False)
     generated_sql = Column(String, nullable=False)
     executed = Column(Integer, default=0) # 0 = False, 1 = True
@@ -81,3 +96,43 @@ class QueryHistory(Base):
     row_count = Column(Integer, nullable=True)
     error_message = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="history")
+
+class UploadedDataset(Base):
+    __tablename__ = "uploaded_datasets"
+
+    id = Column(String(36), primary_key=True, index=True) # UUID
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    original_filename = Column(String(255), nullable=False)
+    file_size_bytes = Column(Integer, nullable=False)
+    file_type = Column(String(20), nullable=False) # 'csv' or 'excel'
+    sheet_name = Column(String(100), nullable=True)
+    table_name = Column(String(64), nullable=False)
+    row_count = Column(Integer, nullable=False)
+    column_count = Column(Integer, nullable=False)
+    columns_json = Column(Text, nullable=False) # JSON array of {name, display_name, type}
+    sqlite_db_path = Column(String(255), nullable=False)
+    storage_path = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="datasets")
+
+class DatabaseConnectionModel(Base):
+    __tablename__ = "database_connections"
+
+    id = Column(String(36), primary_key=True, index=True) # UUID
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    provider = Column(String(50), nullable=False) # 'oracle', 'postgresql', 'mysql'
+    host = Column(String(255), nullable=False)
+    port = Column(Integer, nullable=False)
+    database_name = Column(String(100), nullable=False)
+    username = Column(String(100), nullable=False)
+    encrypted_password = Column(String(500), nullable=False)
+    ssl_enabled = Column(Boolean, default=False)
+    extra_params = Column(Text, nullable=True) # JSON string
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="connections")
+

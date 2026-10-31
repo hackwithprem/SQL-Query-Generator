@@ -1,21 +1,26 @@
 # SQL Query Generator from Plain English
 
-An AI-powered full-stack web application that translates natural language questions into safe, optimized, read-only SQL queries, executes them against a relational database, provides plain-English query explanations, and auto-corrects failing queries.
+An AI-powered full-stack web application that translates natural language questions into safe, optimized, read-only SQL queries, executes them against relational databases or uploaded datasets, provides plain-English query explanations, auto-corrects failing queries, and persists user queries and files securely via Supabase.
 
 ---
 
 ## Key Features
 
-- **Natural Language to SQL**: Converts questions like *"Show all students who scored more than 80 marks"* into valid, schema-aware SQL.
+- **Public Landing Page & Authentication Gate**: Visitors can explore the interface and draft natural language questions immediately without an upfront login wall. When clicking **Generate SQL**, unauthenticated visitors are gracefully prompted with a Sign In / Sign Up modal while their typed question is preserved intact.
+- **Natural Language to SQL**: Converts questions like *"Show all students who scored more than 80 marks"* or *"Find employees earning more than 70000"* into valid, schema-aware SQL.
 - **Strict Read-Only Security Guardrails**: Enforces single-statement, read-only `SELECT` queries with AST parsing. Blocks all destructive statements (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `TRUNCATE`, `SELECT INTO`, etc.) and multi-statement injection attempts.
-- **Editable SQL Editor**: Review, copy, format, and freely edit the SQL before execution. Generation and execution are decoupled.
-- **Interactive Results Table**: Displays returned records with column formatting, execution time in milliseconds, row counts, and CSV export.
+- **User-Uploaded Datasets (CSV & Excel)**: Drag-and-drop or browse CSV and Excel (`.xlsx`, `.xls`) spreadsheets. Automatically inspects worksheets, normalizes column names, infers data types, and generates an isolated queryable database for each user.
+- **Durable Private Storage**: Uploaded files are stored in private Supabase Storage (`private-datasets` bucket), ensuring datasets persist across ephemeral container restarts (Google Cloud Run ready).
+- **Exact 6-Item Authenticated Sidebar**:
+  1. **New Query**: Opens a fresh query workspace.
+  2. **Query History**: Shows the authenticated user's private query history with one-click reloading into the editor.
+  3. **Upload Data**: Upload, preview, query, rename, and delete CSV/Excel files.
+  4. **Profile**: Displays user details and provides display name updates.
+  5. **Logout**: Safely destroys sessions and clears cached client data.
+  6. **Light/Dark Mode**: Seamless persistent theme toggle throughout the interface.
+- **AI Error Auto-Correction**: When a query fails, the AI analyzes the database error against the schema and generates a corrected query with an explanation.
 - **Plain English SQL Explanation**: Explains what the generated query does, including tables queried, joins used, filters applied, and aggregations.
-- **AI Error Auto-Correction**: When a query fails, the AI analyzes the error, repairs the SQL according to the schema, and provides a fix for one-click application into the editor.
-- **Live Database Schema Explorer**: Inspect connected tables, column definitions, data types, primary keys, and foreign-key relationships.
-- **Query History**: Tracks past queries, execution statuses, and timestamps, allowing one-click reloading of previous queries.
-- **Dark & Light Mode**: Modern developer-tool aesthetic with persistent theme toggle.
-- **Multi-Provider AI Architecture**: Modular provider layer supporting **Groq** (`llama-3.3-70b-versatile`), **Gemini** (`gemini-1.5-flash`), and an **Intelligent Offline Fallback** that functions without any external API keys.
+- **Multi-Provider AI Architecture**: Modular provider layer supporting **Groq** (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`), **Gemini** (`gemini-1.5-flash`), and an **Intelligent Offline Fallback** that functions without external API keys.
 
 ---
 
@@ -23,56 +28,59 @@ An AI-powered full-stack web application that translates natural language questi
 
 | Component | Technology |
 |---|---|
-| **Frontend** | React 18, Vite, Tailwind CSS, Lucide Icons, Axios |
+| **Frontend** | React 18, Vite 5, Tailwind CSS 3, Lucide React, Axios |
 | **Backend** | Python 3.10+, FastAPI, Uvicorn, Pydantic v2, SQLAlchemy 2.0 |
 | **SQL Parser & Security** | `sqlparse` dialect-aware AST validation |
-| **Database** | SQLite 3 (`data/sample.db`) with academic schema and realistic seed data |
-| **AI Providers** | Groq (`llama-3.3-70b-versatile`), Google Gemini, and Local Fallback |
+| **File Processing** | `pandas`, `openpyxl`, isolated SQLite per-user storage |
+| **Auth & Cloud Persistence** | **Supabase Auth**, **Supabase PostgreSQL** (RLS), **Supabase Storage** (`private-datasets`) |
+| **AI Providers** | Groq, Google Gemini, and Local Fallback Engine |
 
 ---
 
-## Project Structure
+## Repository Structure
 
 ```
 SQL_Query_Generator/
 ├── backend/
 │   ├── app/
-│   │   ├── api/routes/          # REST API endpoints (generate, execute, explain, correct, schema, history, health)
-│   │   ├── core/                # Configuration and environment settings
-│   │   ├── database/            # Connection, models, and seed script
-│   │   ├── schemas/             # Pydantic request and response schemas
-│   │   ├── services/            # SQL generator, validator, executor, explainer, corrector, history
+│   │   ├── api/                 # REST API routes (auth, data, generate, execute, explain, correct, history, health)
+│   │   ├── core/                # App configuration, security helpers
+│   │   ├── database/            # SQLAlchemy models, SQLite seeds, supabase_schema.sql
+│   │   ├── schemas/             # Pydantic request & response models
+│   │   ├── services/            # Supabase service, LLM providers, SQL executor, validator, dataset service
 │   │   └── main.py              # FastAPI application entry point
-│   ├── tests/                   # Pytest automated test suite (validator, executor, API endpoints)
+│   ├── tests/                   # Automated pytest suite (unit, integration, security isolation)
 │   ├── requirements.txt         # Backend Python dependencies
-│   └── .env.example             # Backend environment template
+│   └── .env.example             # Environment variable template
 ├── frontend/
 │   ├── src/
-│   │   ├── api/                 # Axios HTTP client
+│   │   ├── api/                 # Axios client
 │   │   ├── components/          # Sidebar, Header, PromptInput, SqlEditor, ResultsTable, Modals
-│   │   ├── App.jsx              # Application state and coordination
+│   │   ├── App.jsx              # Main application coordination and auth gate
 │   │   └── main.jsx             # React entry point
 │   ├── package.json             # Frontend Node dependencies
-│   └── vite.config.js           # Vite dev configuration and API proxy
+│   ├── tailwind.config.js       # Tailwind configuration with light/dark themes
+│   └── vite.config.js           # Vite development server and API proxy
 ├── data/
-│   └── sample.db                # SQLite database with academic seed records
+│   └── sample.db                # SQLite academic database with realistic seed records
 ├── docs/
-│   └── architecture.md          # Architecture and security specifications
+│   ├── architecture.md          # Architecture and security specifications
+│   └── api_contracts.md         # API contract documentation
 ├── .gitignore
 └── README.md
 ```
 
 ---
 
-## Quickstart Guide
+## Local Development Quickstart
 
-### 1. Prerequisites
+### Prerequisites
 - Python 3.10+
 - Node.js 18+ and npm
 
 ---
 
-### 2. Backend Setup
+### 1. Backend Setup
 
 1. **Navigate to the backend directory**:
    ```bash
@@ -85,7 +93,7 @@ SQL_Query_Generator/
      python -m venv .venv
      .\.venv\Scripts\Activate.ps1
      ```
-   - On Linux/macOS:
+   - On macOS/Linux:
      ```bash
      python3 -m venv .venv
      source .venv/bin/activate
@@ -96,35 +104,38 @@ SQL_Query_Generator/
    pip install -r requirements.txt
    ```
 
-4. **Configure environment variables (optional)**:
+4. **Configure environment variables**:
+   Create a `.env` file inside `backend/` (or copy from `.env.example`):
    ```bash
    cp .env.example .env
    ```
-   *Note: If no API key is provided, the application automatically uses the built-in Local Pattern Engine so you can immediately explore and test the entire application offline!*
-
-   To use Groq with LLaMA 3.3:
+   Configure your keys:
    ```env
    LLM_PROVIDER=groq
-   GROQ_API_KEY=gsk_your_groq_api_key_here
+   GROQ_API_KEY=your_groq_api_key
    GROQ_MODEL=llama-3.3-70b-versatile
+
+   # Supabase Configuration (Auth, Database, Storage)
+   SUPABASE_URL=https://your-project-id.supabase.co
+   SUPABASE_KEY=your_supabase_anon_key
+   SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+   SUPABASE_STORAGE_BUCKET=private-datasets
+
+   DATABASE_URL=sqlite:///./data/sample.db
+   APP_ENV=development
    ```
 
-5. **Seed the demonstration database**:
+5. **Start the backend server**:
    ```bash
-   python -m app.database.seed
+   uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
    ```
-
-6. **Start the FastAPI backend server**:
-   ```bash
-   uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-   ```
-   The backend API will be available at `http://127.0.0.1:8000` (Interactive Swagger docs at `http://127.0.0.1:8000/docs`).
+   The backend API will be available at `http://127.0.0.1:8000` with interactive docs at `http://127.0.0.1:8000/docs`.
 
 ---
 
-### 3. Frontend Setup
+### 2. Frontend Setup
 
-1. **In a new terminal, navigate to the frontend directory**:
+1. **Navigate to the frontend directory**:
    ```bash
    cd frontend
    ```
@@ -138,77 +149,71 @@ SQL_Query_Generator/
    ```bash
    npm run dev
    ```
-   Open your browser at `http://127.0.0.1:5173`.
+   The frontend will be running at `http://localhost:5173`.
+
+---
+
+## Supabase Configuration & Migration Guide
+
+The application is built to use Supabase for authentication, query history persistence, user profiles, and private storage for uploaded datasets.
+
+### 1. Database Schema & RLS Setup
+Run the SQL migration script located at [`backend/app/database/supabase_schema.sql`](file:///g:/Projects/SQL_Query_Generator/backend/app/database/supabase_schema.sql) in your **Supabase SQL Editor**:
+
+1. **Profiles Table (`public.users`)**:
+   - Mirrored from `auth.users` on signup via a database trigger.
+   - Enforces RLS so users can only view and edit their own profiles.
+2. **Query History (`public.query_history`)**:
+   - Stores `natural_query`, `generated_sql`, `status`, `execution_time_ms`, and `created_at`.
+   - Enforces RLS with `auth.uid() = user_id`.
+3. **Uploaded Datasets (`public.uploaded_datasets`)**:
+   - Stores file metadata, inferred column schema JSON, row counts, and storage paths.
+   - Enforces RLS with `auth.uid() = user_id`.
+
+### 2. Private Storage Bucket Setup
+1. In the Supabase Dashboard, create a storage bucket named `private-datasets`.
+2. Set the bucket to **Private** (public access disabled).
+3. Apply the storage RLS policies in `supabase_schema.sql`:
+   - Only authenticated users can upload files under their folder `user_id/filename`.
+   - Only the owning user can read, download, or delete their stored files.
 
 ---
 
 ## Running Automated Tests
 
-Run the full backend test suite covering SQL validation, safe execution, destructive query rejection, and all API routes:
+Run the backend test suite covering API contracts, SQL validation, read-only guardrails, multi-sheet Excel parsing, profile updates, and cross-user data isolation:
 
 ```powershell
-cd backend
-.\.venv\Scripts\pytest -v tests
+backend\.venv\Scripts\pytest.exe backend/tests -v
 ```
 
-Expected output:
-```
-tests/test_api.py::test_health_endpoint PASSED
-tests/test_api.py::test_schema_endpoint PASSED
-tests/test_api.py::test_generate_sql_endpoint PASSED
-tests/test_api.py::test_execute_sql_endpoint PASSED
-tests/test_api.py::test_execute_sql_endpoint_rejects_delete PASSED
-tests/test_api.py::test_explain_sql_endpoint PASSED
-tests/test_api.py::test_correct_sql_endpoint PASSED
-tests/test_api.py::test_history_endpoints PASSED
-tests/test_executor.py::test_execute_simple_select PASSED
-tests/test_executor.py::test_execute_join_query PASSED
-tests/test_executor.py::test_execute_empty_result PASSED
-tests/test_executor.py::test_execute_blocks_destructive_query PASSED
-tests/test_executor.py::test_execute_invalid_syntax PASSED
-tests/test_validator.py::test_valid_select_query PASSED
-tests/test_validator.py::test_valid_cte_query PASSED
-tests/test_validator.py::test_reject_insert PASSED
-tests/test_validator.py::test_reject_drop_table PASSED
-tests/test_validator.py::test_reject_delete PASSED
-tests/test_validator.py::test_reject_update PASSED
-tests/test_validator.py::test_reject_truncate PASSED
-tests/test_validator.py::test_reject_multiple_statements PASSED
-tests/test_validator.py::test_reject_empty_query PASSED
-tests/test_validator.py::test_reject_select_into PASSED
-======================== 23 passed in 1.00s ========================
+Run the frontend production build test:
+```bash
+cd frontend
+npm run build
 ```
 
 ---
 
-## REST API Endpoints
+## Google Cloud Deployment Readiness
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/health` | Health status of backend, database, and AI provider |
-| `GET` | `/api/schema` | Introspected database tables, columns, data types, and foreign keys |
-| `POST` | `/api/generate-sql` | Translates natural language question into validated SQL |
-| `POST` | `/api/execute-sql` | Safely validates and executes a read-only query against the database |
-| `POST` | `/api/explain-sql` | Produces a plain-English explanation and breakdown of an SQL query |
-| `POST` | `/api/correct-sql` | Uses schema and database error context to repair failing SQL |
-| `GET` | `/api/history` | Fetches recent query history and execution results |
-| `POST` | `/api/history/clear` | Clears recent query history |
+The application is prepared for containerized deployment to **Google Cloud Run**:
 
----
-
-## Sample Questions to Try
-
-1. *"Show all students who scored more than 80 marks."*
-2. *"Find the top 5 students by GPA."*
-3. *"Show the average marks for each course."*
-4. *"Count the total number of students."*
-5. *"List courses with no enrolled students."*
-6. *"Find students enrolled in more than one course."*
-7. *"Show all courses in the Computer Science department."*
-8. *"Show highest scoring student in any exam."*
+1. **Stateless Backend Design**:
+   - Uploaded files are uploaded to durable Supabase Storage (`private-datasets`).
+   - If a container restarts or scales to a new instance, `DatasetService.ensure_sqlite_db_exists` reconstructs the isolated queryable SQLite database on-demand from Supabase Storage.
+2. **Environment Variables**:
+   - Never embed secrets in images or frontend builds.
+   - Store `GROQ_API_KEY`, `SUPABASE_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` in **Google Cloud Secret Manager** and inject them as environment variables into Cloud Run.
+3. **CORS Configuration**:
+   - Set `CORS_ORIGINS=["https://your-frontend-domain.web.app"]` in Cloud Run environment variables to restrict API access exclusively to your frontend.
+4. **Health Check Endpoint**:
+   - Cloud Run startup and liveness probes can monitor `/api/health`.
 
 ---
 
-## License
+## Known Limitations
 
-MIT License. Designed for education, development, and productivity.
+- Multi-statement queries (e.g. `SELECT 1; SELECT 2;`) are strictly blocked by the SQL validator to prevent SQL injection vulnerabilities.
+- Destructive operations (`DROP`, `DELETE`, `UPDATE`, `ALTER`, `TRUNCATE`, `SELECT INTO`) are rejected by the read-only security filter.
+- File uploads are capped at 15MB and 50,000 rows to ensure responsive performance in memory.
