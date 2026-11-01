@@ -1,37 +1,191 @@
 import logging
+import math
+import re
+from collections import Counter
 from typing import List, Dict, Any, Optional
-import numpy as np
 from app.core.config import settings
-from app.services.rag.embedding_service import EmbeddingService
 from app.services.rag.knowledge_base import SQL_EXAMPLES
-from app.services.supabase_service import SupabaseService
 
 logger = logging.getLogger(__name__)
 
+# Standard English stop words
+STOP_WORDS = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
+    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
+    "below", "between", "both", "but", "by", "can't", "cannot", "could", "couldn't",
+    "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down", "during",
+    "each", "few", "for", "from", "further", "had", "hadn't", "has", "hasn't",
+    "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here",
+    "here's", "hers", "herself", "him", "himself", "his", "how", "how's", "i",
+    "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it", "it's",
+    "its", "itself", "let's", "me", "more", "most", "mustn't", "my", "myself",
+    "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "ought",
+    "our", "ours", "ourselves", "out", "over", "own", "same", "shan't", "she",
+    "she'd", "she'll", "she's", "should", "shouldn't", "so", "some", "such",
+    "than", "that", "that's", "the", "their", "theirs", "them", "themselves",
+    "then", "there", "there's", "these", "they", "they'd", "they'll", "they're",
+    "they've", "this", "those", "through", "to", "too", "under", "until", "up",
+    "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
+    "weren't", "what", "what's", "when", "when's", "where", "where's", "which",
+    "while", "who", "who's", "whom", "why", "why's", "with", "won't", "would",
+    "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+    "yourself", "yourselves"
+}
+
+
+def stem_token(word: str) -> str:
+    """
+    Lightweight rule-based suffix normalization for English vocabulary.
+    Normalizes common plurals, verb forms, and noun variations without external NLP packages.
+    """
+    if len(word) > 4:
+        if word.endswith("ies") and len(word) > 5:
+            return word[:-3] + "y"
+        if word.endswith("ing") and len(word) > 5:
+            return word[:-3]
+        if word.endswith("ed") and len(word) > 4:
+            return word[:-2]
+        if word.endswith("es") and len(word) > 4:
+            return word[:-2]
+        if word.endswith("s") and not word.endswith("ss") and len(word) > 3:
+            return word[:-1]
+    return word
+
+
+def tokenize(text: str) -> List[str]:
+    """
+    Normalizes and tokenizes text:
+    - Lowercase normalization
+    - Alphanumeric word extraction
+    - Stop-word filtering
+    - Suffix stemming for vocabulary alignment
+    """
+    if not text:
+        return []
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    tokens: List[str] = []
+    for w in words:
+        if w not in STOP_WORDS and len(w) > 1:
+            tokens.append(w)
+            stemmed = stem_token(w)
+            if stemmed != w:
+                tokens.append(stemmed)
+        elif w.isdigit():
+            tokens.append(w)
+    return tokens
+
+
+class BM25Index:
+    """
+    In-memory BM25 (Okapi) index built from pre-curated SQL examples.
+    Zero external ML/PyTorch dependencies, ultra-fast (<1ms) indexing and retrieval.
+    """
+    def __init__(self, examples: List[Dict[str, Any]], k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self.examples = examples
+        self.num_docs = len(examples)
+        self.doc_tokens: List[List[str]] = []
+        self.doc_term_freqs: List[Counter] = []
+        self.doc_lengths: List[int] = []
+        self.avg_doc_len: float = 0.0
+        self.doc_freq: Counter = Counter()
+        self.idf: Dict[str, float] = {}
+
+        self._build_index()
+
+    def _build_index(self) -> None:
+        if not self.examples:
+            return
+
+        total_length = 0
+        for ex in self.examples:
+            # Combine question and category for comprehensive semantic matching
+            cat = ex.get("category", "").replace("_", " ")
+            text = f"{ex['question']} {cat}"
+            tokens = tokenize(text)
+            self.doc_tokens.append(tokens)
+            length = len(tokens)
+            self.doc_lengths.append(length)
+            total_length += length
+
+            tf = Counter(tokens)
+            self.doc_term_freqs.append(tf)
+            for t in tf.keys():
+                self.doc_freq[t] += 1
+
+        self.avg_doc_len = total_length / self.num_docs if self.num_docs > 0 else 0.0
+
+        # Precompute Lucene/BM25Okapi IDF: ln((N - n + 0.5) / (n + 0.5) + 1.0)
+        # Always >= 0, guaranteeing positive relevance contributions
+        for term, freq in self.doc_freq.items():
+            self.idf[term] = math.log((self.num_docs - freq + 0.5) / (freq + 0.5) + 1.0)
+
+    def search(self, query: str, top_k: int = 3, min_score: float = 0.1) -> List[Dict[str, Any]]:
+        """
+        Scores and ranks documents against the query terms using BM25Okapi.
+        Returns top-K results exceeding min_score. Returns empty list if no meaningful terms match.
+        """
+        query_tokens = tokenize(query)
+        if not query_tokens:
+            return []
+
+        # Check if any query token exists in index
+        matched_any = any(t in self.doc_freq for t in query_tokens)
+        if not matched_any:
+            return []
+
+        scored_results: List[Dict[str, Any]] = []
+
+        for idx, ex in enumerate(self.examples):
+            tf = self.doc_term_freqs[idx]
+            dl = self.doc_lengths[idx]
+            score = 0.0
+
+            for t in query_tokens:
+                if t in tf:
+                    term_freq = tf[t]
+                    idf_val = self.idf.get(t, 0.0)
+                    # BM25Okapi term score
+                    numerator = term_freq * (self.k1 + 1.0)
+                    denominator = term_freq + self.k1 * (1.0 - self.b + self.b * (dl / self.avg_doc_len)) if self.avg_doc_len > 0 else 1.0
+                    score += idf_val * (numerator / denominator)
+
+            if score > 0.0 and score >= min_score:
+                round_score = round(score, 4)
+                scored_results.append({
+                    "id": ex["id"],
+                    "question": ex["question"],
+                    "sql_query": ex["sql_query"],
+                    "category": ex.get("category"),
+                    "dialect": ex.get("dialect", "general"),
+                    "similarity": round_score,
+                    "score": round_score
+                })
+
+        # Rank by relevance score descending
+        scored_results.sort(key=lambda x: x["score"], reverse=True)
+        return scored_results[:top_k]
+
+
 class RAGService:
     """
-    Example-Based Retrieval-Augmented Generation (RAG) Service.
+    Lightweight, Pure-Python BM25 Retrieval-Augmented Generation (RAG) Service.
     Retrieves the most semantically relevant SQL query examples for a user's question
-    to guide the LLM with few-shot syntactic patterns without schema hallucination.
+    to guide the LLM with few-shot syntactic patterns without downloading heavy ML models.
     """
-    _local_embeddings_cache: Optional[List[List[float]]] = None
+    _index: Optional[BM25Index] = None
 
     @classmethod
-    def _get_local_embeddings(cls) -> List[List[float]]:
+    def _get_index(cls) -> BM25Index:
         """
-        Lazily computes and caches embeddings for the local knowledge base.
-        Enables seamless offline demonstration and fallback when Supabase is unavailable.
+        Initializes and caches the BM25 index once on the pre-curated SQL knowledge base.
+        Zero network latency, zero heavy PyTorch memory allocation.
         """
-        if cls._local_embeddings_cache is None:
-            logger.info("Computing embeddings for local SQL knowledge base examples...")
-            questions = [ex["question"] for ex in SQL_EXAMPLES]
-            embeddings = EmbeddingService.get_batch_embeddings(questions)
-            # Replace any failed embeddings with zeros of length 384
-            cls._local_embeddings_cache = [
-                emb if emb is not None else [0.0] * 384
-                for emb in embeddings
-            ]
-        return cls._local_embeddings_cache
+        if cls._index is None:
+            logger.info("Initializing lightweight BM25 index on SQL knowledge base...")
+            cls._index = BM25Index(SQL_EXAMPLES)
+        return cls._index
 
     @classmethod
     def retrieve_relevant_examples(
@@ -41,115 +195,32 @@ class RAGService:
         threshold: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         """
-        Retrieves top-k most relevant SQL examples using cosine similarity.
-        Tries Supabase pgvector search first; gracefully falls back to local knowledge base.
-        Returns empty list if RAG is disabled, on embedding failure, or no examples pass threshold.
+        Retrieves top-k most relevant SQL examples using BM25 relevance scoring.
+        Returns empty list if RAG is disabled, query is empty, or no examples meet threshold.
         """
         if not getattr(settings, "RAG_ENABLED", True):
             return []
 
-        effective_top_k = top_k or getattr(settings, "RAG_TOP_K", 3)
-        effective_threshold = threshold if threshold is not None else getattr(settings, "RAG_SIMILARITY_THRESHOLD", 0.4)
-
-        # Step 1: Generate query embedding
-        query_embedding = EmbeddingService.get_embedding(question)
-        if query_embedding is None:
-            logger.warning("Failed to generate embedding for question; skipping RAG retrieval.")
+        if not question or not question.strip():
             return []
 
-        # Step 2: Try Supabase pgvector search via match_sql_examples RPC
-        supabase_results = cls._retrieve_from_supabase(query_embedding, effective_top_k, effective_threshold)
-        if supabase_results is not None:
-            return supabase_results
-
-        # Step 3: Fallback to local vector search (in-memory cosine similarity)
-        logger.info("Using local knowledge base for RAG similarity search fallback.")
-        return cls._retrieve_from_local(query_embedding, effective_top_k, effective_threshold)
-
-    @classmethod
-    def _retrieve_from_supabase(
-        cls,
-        query_embedding: List[float],
-        top_k: int,
-        threshold: float
-    ) -> Optional[List[Dict[str, Any]]]:
-        """
-        Queries Supabase PostgreSQL pgvector via RPC 'match_sql_examples'.
-        Returns None if Supabase client is unconfigured or call fails.
-        """
-        client = SupabaseService.get_client()
-        if not client:
-            return None
+        effective_top_k = top_k or getattr(settings, "RAG_TOP_K", 3)
+        effective_threshold = (
+            threshold
+            if threshold is not None
+            else getattr(settings, "RAG_MIN_SCORE", getattr(settings, "RAG_SIMILARITY_THRESHOLD", 0.1))
+        )
 
         try:
-            rpc_res = client.rpc(
-                "match_sql_examples",
-                {
-                    "query_embedding": query_embedding,
-                    "match_threshold": threshold,
-                    "match_count": top_k
-                }
-            ).execute()
-
-            if rpc_res and rpc_res.data is not None:
-                results = []
-                for row in rpc_res.data:
-                    results.append({
-                        "id": str(row.get("id")),
-                        "question": row.get("question"),
-                        "sql_query": row.get("sql_query"),
-                        "category": row.get("category"),
-                        "dialect": row.get("dialect", "general"),
-                        "similarity": round(float(row.get("similarity", 0.0)), 4)
-                    })
-                return results
+            index = cls._get_index()
+            results = index.search(
+                query=question,
+                top_k=effective_top_k,
+                min_score=effective_threshold
+            )
+            return results
         except Exception as e:
-            logger.warning(f"Supabase pgvector retrieval failed (falling back to local cache): {e}")
-            return None
-
-        return None
-
-    @classmethod
-    def _retrieve_from_local(
-        cls,
-        query_embedding: List[float],
-        top_k: int,
-        threshold: float
-    ) -> List[Dict[str, Any]]:
-        """
-        Performs in-memory cosine similarity search against pre-curated SQL examples.
-        Since embeddings are L2 normalized, cosine similarity equals dot product.
-        """
-        try:
-            local_embs = cls._get_local_embeddings()
-            if not local_embs:
-                return []
-
-            q_vec = np.array(query_embedding, dtype=np.float32)
-            emb_matrix = np.array(local_embs, dtype=np.float32)
-
-            # Dot product of normalized vectors = cosine similarity
-            similarities = np.dot(emb_matrix, q_vec)
-
-            scored_examples = []
-            for idx, score in enumerate(similarities):
-                float_score = float(score)
-                if float_score >= threshold:
-                    ex = SQL_EXAMPLES[idx]
-                    scored_examples.append({
-                        "id": ex["id"],
-                        "question": ex["question"],
-                        "sql_query": ex["sql_query"],
-                        "category": ex.get("category"),
-                        "dialect": ex.get("dialect", "general"),
-                        "similarity": round(float_score, 4)
-                    })
-
-            # Sort descending by similarity
-            scored_examples.sort(key=lambda x: x["similarity"], reverse=True)
-            return scored_examples[:top_k]
-        except Exception as e:
-            logger.error(f"Local vector similarity search failed: {e}")
+            logger.error(f"BM25 RAG retrieval failed: {e}")
             return []
 
     @classmethod
@@ -179,4 +250,3 @@ class RAGService:
             lines.append("")
 
         return "\n".join(lines).strip()
-

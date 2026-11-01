@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # LLM Settings
     LLM_PROVIDER: str = "groq" # "groq", "gemini", or "mock"
     GROQ_API_KEY: str = Field(default="", validation_alias="GROQ_API_KEY")
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
     GEMINI_API_KEY: str = Field(default="", validation_alias="GEMINI_API_KEY")
     GEMINI_MODEL: str = "gemini-1.5-flash"
     
@@ -34,11 +34,11 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = Field(default="", validation_alias="SUPABASE_SERVICE_ROLE_KEY")
     SUPABASE_STORAGE_BUCKET: str = "private-datasets"
 
-    # RAG (Retrieval-Augmented Generation) Settings
+    # RAG (Retrieval-Augmented Generation) Settings - Lightweight Pure-Python BM25
     RAG_ENABLED: bool = True
-    RAG_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     RAG_TOP_K: int = 3
-    RAG_SIMILARITY_THRESHOLD: float = 0.4
+    RAG_MIN_SCORE: float = 0.1
+    RAG_SIMILARITY_THRESHOLD: float = 0.1  # Backward compatibility alias for score threshold
 
     # Database Settings
     DATABASE_URL: str = f"sqlite:///{DATA_DIR / 'sample.db'}"
